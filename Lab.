@@ -1,1 +1,156 @@
 
+#include <stdio.h>
+#include <stdlib.h>
+
+#define PAGE_SIZE 256             // 256 bytes per page
+#define NUM_PAGES 256             // Virtual pages
+#define NUM_FRAMES 64             // Physical frames
+#define PHYSICAL_MEMORY_SIZE (NUM_FRAMES * PAGE_SIZE)
+#define TLB_SIZE 4
+#define CACHE_SIZE 8
+#define CACHE_LINE_SIZE 64
+
+//  Data Structures 
+typedef struct {
+    int physical_page_number;
+    int valid;
+} PageTableEntry;
+
+typedef struct {
+    int virtual_page_number;
+    int physical_page_number;
+} TLBEntry;
+
+typedef struct {
+    int tag;
+    unsigned char data[CACHE_LINE_SIZE];
+    int valid;
+} CacheLine;
+
+//  Global System Components 
+unsigned char physical_memory[PHYSICAL_MEMORY_SIZE];
+PageTableEntry page_table[NUM_PAGES];
+TLBEntry tlb[TLB_SIZE];
+CacheLine cache[CACHE_SIZE];
+
+// Counters
+int tlb_hits = 0, tlb_misses = 0;
+int page_faults = 0, cache_hits = 0, cache_misses = 0;
+
+// Functions 
+int allocate_frame(int virtual_page_number) {
+    static int next_frame = 0;
+    int frame = next_frame;
+    next_frame = (next_frame + 1) % NUM_FRAMES;
+
+    page_table[virtual_page_number].physical_page_number = frame;
+    page_table[virtual_page_number].valid = 1;
+
+    // Initialize memory for this page (fill with offset values 0-255)
+    for (int i = 0; i < PAGE_SIZE; i++)
+        physical_memory[frame * PAGE_SIZE + i] = i;
+
+    page_faults++;
+    return frame;
+}
+
+int read_virtual_address(int virtual_address) {
+    
+
+//  Input Validation
+    if (virtual_address < 0 || virtual_address >= NUM_PAGES * PAGE_SIZE) {
+        printf("Error: Virtual address out of range! Valid range is 0 to %d\n\n", NUM_PAGES * PAGE_SIZE - 1);
+        return -1;
+    }
+
+    int virtual_page_number = virtual_address / PAGE_SIZE;
+    int offset = virtual_address % PAGE_SIZE;
+    int physical_page_number = -1;
+    int tlb_hit = 0, page_hit = 0, page_fault_occurred = 0;
+    int cache_hit = 0;
+
+    //TLB Lookup
+    for (int i = 0; i < TLB_SIZE; i++) {
+        if (tlb[i].virtual_page_number == virtual_page_number) {
+            physical_page_number = tlb[i].physical_page_number;
+            tlb_hit = 1;
+            tlb_hits++;
+            break;
+        }
+    }
+
+    //  Page Table Lookup
+    if (!tlb_hit) {
+        tlb_misses++;
+        if (page_table[virtual_page_number].valid) {
+            physical_page_number = page_table[virtual_page_number].physical_page_number;
+            page_hit = 1;
+        } else {
+            // Page fault: allocate frame
+            physical_page_number = allocate_frame(virtual_page_number);
+            page_fault_occurred = 1;
+        }
+        // Update TLB (FIFO)
+        static int tlb_index = 0;
+        tlb[tlb_index].virtual_page_number = virtual_page_number;
+        tlb[tlb_index].physical_page_number = physical_page_number;
+        tlb_index = (tlb_index + 1) % TLB_SIZE;
+    }
+
+    // Physical Address 
+    int physical_address = physical_page_number * PAGE_SIZE + offset;
+
+    //  Cache Access
+    int cache_index = (physical_address / CACHE_LINE_SIZE) % CACHE_SIZE;
+    int tag = physical_address / CACHE_LINE_SIZE;
+    int offset_in_line = physical_address % CACHE_LINE_SIZE;
+    unsigned char data;
+
+    if (cache[cache_index].valid && cache[cache_index].tag == tag) {
+        data = cache[cache_index].data[offset_in_line];
+        cache_hits++;
+        cache_hit = 1;
+    } else {
+        cache_misses++;
+        cache[cache_index].valid = 1;
+        cache[cache_index].tag = tag;
+        int base = physical_address - offset_in_line;
+        for (int i = 0; i < CACHE_LINE_SIZE; i++)
+            cache[cache_index].data[i] = physical_memory[base + i];
+        data = cache[cache_index].data[offset_in_line];
+    }
+
+    //  Print each field line by line 
+    printf("Virtual Addr: %d\n", virtual_address);
+    printf("Physical Addr: %d\n", physical_address);
+    printf("Data: %d\n", data);
+    printf("TLB: %s\n", tlb_hit ? "Hit" : "Miss");
+    printf("Page Table: %s\n", page_hit ? "Hit" : (page_fault_occurred ? "Fault" : "Miss"));
+    printf("Cache: %s\n\n", cache_hit ? "Hit" : "Miss");
+
+    return data;
+}
+
+//  Main 
+int main() {
+    // Initialize components
+    for (int i = 0; i < NUM_PAGES; i++) page_table[i].valid = 0;
+    for (int i = 0; i < TLB_SIZE; i++) tlb[i].virtual_page_number = -1;
+    for (int i = 0; i < CACHE_SIZE; i++) cache[i].valid = 0;
+
+    printf("Enter virtual addresses (negative number to quit):\n");
+    int vaddr;
+    while (1) {
+        printf("Virtual Address: ");
+        if (scanf("%d", &vaddr) != 1 || vaddr < 0) break;
+        read_virtual_address(vaddr);
+    }
+
+    // Print statistics
+    printf("\n--- Statistics ---\n");
+    printf("TLB Hits: %d | TLB Misses: %d\n", tlb_hits, tlb_misses);
+    printf("Page Faults: %d\n", page_faults);
+    printf("Cache Hits: %d | Cache Misses: %d\n", cache_hits, cache_misses);
+
+    return 0;
+}
